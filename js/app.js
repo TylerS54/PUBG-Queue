@@ -1,4 +1,152 @@
 document.addEventListener('DOMContentLoaded', function() {
+    // Initialize sync related elements
+    const createRoomBtn = document.getElementById('create-room-btn');
+    const joinRoomBtn = document.getElementById('join-room-btn');
+    const leaveRoomBtn = document.getElementById('leave-room-btn');
+    const roomIdInput = document.getElementById('room-id-input');
+    const currentRoomIdElement = document.getElementById('current-room-id');
+    const copyRoomIdBtn = document.getElementById('copy-room-id');
+    const activeRoomSection = document.getElementById('active-room');
+    const hostBadge = document.getElementById('host-badge');
+    
+    // Setup sync callbacks
+    window.pubgSync.onData(handleSyncData);
+    window.pubgSync.onConnection(handleSyncConnection);
+    window.pubgSync.onDisconnect(handleSyncDisconnection);
+    window.pubgSync.onHostChange(handleHostChange);
+    
+    // Sync data event handlers
+    function handleSyncData(type, data) {
+        console.log('Sync data received:', type, data);
+        
+        if (type === 'STATE_UPDATE' && data) {
+            // Update the application state with the received data
+            updateStateFromSync(data);
+        } else if (type === 'ACTION' && data) {
+            // Handle specific actions
+            if (data.action === 'STATE_UPDATE') {
+                updateStateFromSync(data.data);
+            } else if (data.action === 'CALL_NEXT') {
+                // Someone called the next player
+                // Just update our state, actual UI will be updated via state update
+            } else if (data.action === 'RESET_QUEUE') {
+                queue = [];
+                saveState();
+                updateUI();
+            } else if (data.action === 'RESET_ALL') {
+                queue = [];
+                currentTeam = [];
+                currentTicket = 1;
+                lastCalledTicket = 0;
+                saveState();
+                updateUI();
+            }
+        } else if (type === 'REQUEST_STATE') {
+            // Return the current state for a peer that requested it
+            return getCurrentState();
+        }
+    }
+    
+    function handleSyncConnection() {
+        console.log('Connected to sync network');
+        
+        // Show a toast notification
+        // We'll use a simple alert for now
+        setTimeout(() => {
+            alert('Connected to room! Queue data will now be synchronized.');
+        }, 500);
+    }
+    
+    function handleSyncDisconnection() {
+        console.log('Disconnected from sync network');
+        
+        // Hide the active room UI
+        hideActiveRoom();
+        
+        // Show a toast notification
+        setTimeout(() => {
+            alert('Disconnected from room. Your queue will no longer be synchronized.');
+        }, 500);
+    }
+    
+    function handleHostChange(isHost, roomId) {
+        console.log('Host status changed:', isHost, roomId);
+        showActiveRoom(roomId, isHost);
+        
+        if (isHost) {
+            setTimeout(() => {
+                alert('You are now the host of this room.');
+            }, 500);
+        }
+    }
+    
+    // Add event listeners for sync buttons
+    createRoomBtn.addEventListener('click', createRoom);
+    joinRoomBtn.addEventListener('click', joinRoom);
+    leaveRoomBtn.addEventListener('click', leaveRoom);
+    copyRoomIdBtn.addEventListener('click', copyRoomId);
+    
+    // Check if already in a room
+    if (window.pubgSync.isInRoom()) {
+        showActiveRoom(window.pubgSync.getRoomId(), window.pubgSync.getIsHost());
+    }
+
+    // Sync room functions
+    function createRoom() {
+        const roomId = window.pubgSync.createRoom();
+        if (roomId) {
+            showActiveRoom(roomId, true);
+        }
+    }
+
+    function joinRoom() {
+        const roomId = roomIdInput.value.trim();
+        if (!roomId) {
+            alert('Please enter a valid Room ID');
+            return;
+        }
+        
+        if (window.pubgSync.joinRoom(roomId)) {
+            showActiveRoom(roomId, false);
+        } else {
+            alert('Failed to join room. Please check the Room ID and try again.');
+        }
+    }
+
+    function leaveRoom() {
+        window.pubgSync.disconnect();
+        hideActiveRoom();
+    }
+
+    function copyRoomId() {
+        navigator.clipboard.writeText(currentRoomIdElement.textContent)
+            .then(() => {
+                const originalText = copyRoomIdBtn.innerHTML;
+                copyRoomIdBtn.innerHTML = '<i class="fas fa-check"></i>';
+                setTimeout(() => {
+                    copyRoomIdBtn.innerHTML = originalText;
+                }, 2000);
+            })
+            .catch(err => {
+                console.error('Failed to copy: ', err);
+            });
+    }
+
+    function showActiveRoom(roomId, isHost) {
+        currentRoomIdElement.textContent = roomId;
+        activeRoomSection.classList.remove('d-none');
+        
+        if (isHost) {
+            hostBadge.classList.remove('d-none');
+        } else {
+            hostBadge.classList.add('d-none');
+        }
+    }
+
+    function hideActiveRoom() {
+        activeRoomSection.classList.add('d-none');
+        roomIdInput.value = '';
+    }
     // Audio is now loaded from our sounds/notification.js file with embedded base64 audio
     // No need to preload separately
     // Check if dark mode was previously enabled
@@ -85,7 +233,7 @@ document.addEventListener('DOMContentLoaded', function() {
         queue.push(ticket);
         currentTicket++;
         
-        // Save to localStorage
+        // Save to localStorage and broadcast changes
         saveState();
         updateUI();
         
@@ -114,7 +262,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         currentTeam.push(player);
         
-        // Save to localStorage
+        // Save to localStorage and broadcast changes
         saveState();
         updateUI();
         
@@ -159,9 +307,17 @@ document.addEventListener('DOMContentLoaded', function() {
             playNotificationSound();
             startChickenRain();
             
-            // Save state and update UI
+            // Save state and broadcast changes
             saveState();
             updateUI();
+            
+            // If we're connected to a room, send a specific action
+            if (window.pubgSync && window.pubgSync.isInRoom()) {
+                window.pubgSync.sendData({
+                    action: 'CALL_NEXT',
+                    playerId: nextPlayer.id
+                });
+            }
             
             // Reset button
             nextBtn.innerHTML = 'Next Player <i class="fas fa-arrow-right"></i>';
@@ -232,7 +388,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     function removePlayerFromTeam(index) {
         currentTeam.splice(index, 1);
-        saveState();
+        saveState(); // This will broadcast changes if in a room
         updateUI();
     }
     
@@ -241,6 +397,13 @@ document.addEventListener('DOMContentLoaded', function() {
             queue = [];
             localStorage.setItem('pubgQueue', JSON.stringify(queue));
             updateUI();
+            
+            // If we're connected to a room, send a reset queue action
+            if (window.pubgSync && window.pubgSync.isInRoom()) {
+                window.pubgSync.sendData({
+                    action: 'RESET_QUEUE'
+                });
+            }
         }
     }
     
@@ -253,6 +416,13 @@ document.addEventListener('DOMContentLoaded', function() {
             
             saveState();
             updateUI();
+            
+            // If we're connected to a room, send a reset all action
+            if (window.pubgSync && window.pubgSync.isInRoom()) {
+                window.pubgSync.sendData({
+                    action: 'RESET_ALL'
+                });
+            }
         }
     }
     
@@ -263,6 +433,48 @@ document.addEventListener('DOMContentLoaded', function() {
         localStorage.setItem('lastCalledTicket', lastCalledTicket);
         localStorage.setItem('darkMode', document.body.classList.contains('dark-theme'));
         localStorage.setItem('autoCallEnabled', autoCallEnabled);
+        
+        // If we're in a synchronized room, broadcast the state change
+        if (window.pubgSync && window.pubgSync.isInRoom()) {
+            broadcastStateChange();
+        }
+    }
+    
+    // Get the current state for synchronization
+    function getCurrentState() {
+        return {
+            queue: queue,
+            currentTeam: currentTeam,
+            currentTicket: currentTicket,
+            lastCalledTicket: lastCalledTicket
+        };
+    }
+    
+    // Update the state from sync data
+    function updateStateFromSync(data) {
+        if (!data) return;
+        
+        queue = data.queue || [];
+        currentTeam = data.currentTeam || [];
+        currentTicket = data.currentTicket || 1;
+        lastCalledTicket = data.lastCalledTicket || 0;
+        
+        // Update the UI
+        updateUI();
+        
+        // Save to localStorage but don't broadcast again
+        localStorage.setItem('pubgQueue', JSON.stringify(queue));
+        localStorage.setItem('pubgTeam', JSON.stringify(currentTeam));
+        localStorage.setItem('currentTicket', currentTicket);
+        localStorage.setItem('lastCalledTicket', lastCalledTicket);
+    }
+    
+    // Broadcast state change to all connected peers
+    function broadcastStateChange() {
+        window.pubgSync.sendData({
+            action: 'STATE_UPDATE',
+            data: getCurrentState()
+        });
     }
     
     function formatTimestamp(timestamp) {
