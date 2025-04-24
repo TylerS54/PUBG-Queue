@@ -19,12 +19,10 @@ class PubgSync {
 
     // Initialize the peer connection
     init() {
-        // Use a public PeerJS server for better connectivity
-        // This allows connections across different networks
+        // Use the default PeerJS cloud service (no config needed)
+        // This gives us the best chance of NAT traversal across different networks
         this.peer = new Peer({
-            host: 'peerjs-server.herokuapp.com',
-            secure: true,
-            port: 443,
+            // No host/port needed - will use PeerJS's cloud service
             config: {
                 'iceServers': [
                     { urls: 'stun:stun.l.google.com:19302' },
@@ -155,20 +153,25 @@ class PubgSync {
             return true; // Return optimistically
         }
         
+        // Display connecting indicator in UI
+        if (this.onConnectionCallback) {
+            this.onConnectionCallback('connecting');
+        }
+        
         // First, we need to discover the actual peer ID corresponding to this friendly room ID
-        // This requires a signaling mechanism, which we'll simulate with a room registration
-        
-        // For simplicity, we'll use a query parameter added to the PeerJS connection
-        // In a more robust implementation, this would use a lightweight signaling server
-        
-        // Send a discovery connection to the PeerJS server
         this.discoverHostPeerId(friendlyRoomId, (hostPeerId) => {
             if (!hostPeerId) {
                 console.error('Could not find host for room:', friendlyRoomId);
+                
+                // Notify UI about connection failure
+                if (this.onDisconnectCallback) {
+                    this.onDisconnectCallback('failed_discovery');
+                }
                 return false;
             }
             
             // Connect to the discovered host
+            console.log('Connecting to host peer ID:', hostPeerId);
             const conn = this.peer.connect(hostPeerId, {
                 reliable: true,
                 metadata: { roomId: friendlyRoomId }
@@ -304,9 +307,9 @@ class PubgSync {
         let connectionTimeout = setTimeout(() => {
             console.error('Connection timed out');
             if (!this.isConnected && this.onDisconnectCallback) {
-                this.onDisconnectCallback();
+                this.onDisconnectCallback('timeout');
             }
-        }, 5000);
+        }, 8000); // Increased to 8 seconds for slower networks
         
         conn.on('open', () => {
             console.log('Connected to host');
@@ -319,7 +322,7 @@ class PubgSync {
             });
             
             if (this.onConnectionCallback) {
-                this.onConnectionCallback();
+                this.onConnectionCallback('success');
             }
         });
         
@@ -332,7 +335,7 @@ class PubgSync {
             this.isConnected = false;
             
             if (this.onDisconnectCallback) {
-                this.onDisconnectCallback();
+                this.onDisconnectCallback('closed');
             }
             
             // Try to reconnect or become host
@@ -344,7 +347,7 @@ class PubgSync {
             this.isConnected = false;
             
             if (this.onDisconnectCallback) {
-                this.onDisconnectCallback();
+                this.onDisconnectCallback('error');
             }
             
             // Try to reconnect or become host

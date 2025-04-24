@@ -47,7 +47,16 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
     
-    function handleSyncConnection() {
+    function handleSyncConnection(status) {
+        console.log('Sync connection status:', status);
+        
+        // If this is just a connecting notification, update UI accordingly
+        if (status === 'connecting') {
+            currentRoomIdElement.textContent = window.pubgSync.getRoomId() + " (connecting...)";
+            return;
+        }
+        
+        // Otherwise it's a successful connection
         console.log('Connected to sync network');
         
         // Update room display to remove "connecting" status
@@ -62,15 +71,19 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 500);
     }
     
-    function handleSyncDisconnection() {
-        console.log('Disconnected from sync network');
+    function handleSyncDisconnection(reason) {
+        console.log('Disconnected from sync network. Reason:', reason);
         
         // Hide the active room UI
         hideActiveRoom();
         
-        // Show a toast notification
+        // Show a toast notification with appropriate message
         setTimeout(() => {
-            alert('Disconnected from room. Your queue will no longer be synchronized.');
+            if (reason === 'failed_discovery') {
+                alert('Unable to find the host for this room. The room may no longer exist or the host may be offline.');
+            } else {
+                alert('Disconnected from room. Your queue will no longer be synchronized.');
+            }
         }, 500);
     }
     
