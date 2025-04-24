@@ -29,21 +29,23 @@ document.addEventListener('DOMContentLoaded', function() {
             } else if (data.action === 'CALL_NEXT') {
                 // Someone called the next player
                 // Show notification for the newly called player
-                const playerData = data.playerData;
-                if (playerData) {
+                console.log('Call next data received:', data);
+                if (data.playerData) {
                     // Update the now serving display with animation
                     nowServingDisplay.style.animation = 'none';
                     void nowServingDisplay.offsetWidth;
                     nowServingDisplay.style.animation = 'glow 1.5s infinite alternate';
-                    nowServingDisplay.textContent = playerData.id;
+                    nowServingDisplay.textContent = data.playerData.id;
                     
                     // Show notification modal
-                    notificationMessage.textContent = `${playerData.name}, your ticket #${playerData.id} has been called!`;
+                    notificationMessage.textContent = `${data.playerData.name}, your ticket #${data.playerData.id} has been called!`;
                     notificationModal.show();
                     
                     // Visual effects
                     playNotificationSound();
                     startChickenRain();
+                } else {
+                    console.warn('No player data received with CALL_NEXT action');
                 }
             } else if (data.action === 'RESET_QUEUE') {
                 queue = [];

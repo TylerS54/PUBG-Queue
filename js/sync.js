@@ -51,8 +51,41 @@ class PubgSync {
     
     // Clean up existing connection if there is one
     cleanupExistingConnection() {
+        // Clear any intervals
+        if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = null;
+        }
+        
+        // Close connection to host if we have one
+        if (this.hostConnection && this.hostConnection.open) {
+            try {
+                this.hostConnection.close();
+            } catch (e) {
+                console.error('Error closing host connection:', e);
+            }
+        }
+        
+        // Close all peer connections
+        if (this.connections && this.connections.length > 0) {
+            this.connections.forEach(conn => {
+                if (conn && conn.open) {
+                    try {
+                        conn.close();
+                    } catch (e) {
+                        console.error('Error closing connection:', e);
+                    }
+                }
+            });
+        }
+        
+        // Destroy the peer object
         if (this.peer && !this.peer.destroyed) {
-            this.peer.destroy();
+            try {
+                this.peer.destroy();
+            } catch (e) {
+                console.error('Error destroying peer:', e);
+            }
         }
         
         // Reset state
@@ -60,6 +93,7 @@ class PubgSync {
         this.connections = [];
         this.isConnected = false;
         this.hostConnection = null;
+        this.pingInterval = null;
     }
 
     // Create a new room as host
@@ -206,55 +240,109 @@ class PubgSync {
         
         this.hostConnection = conn;
         
-        // Set a timeout in case the connection never opens
+        // Set a longer timeout for connection establishment
         let connectionTimeout = setTimeout(() => {
             console.error('Connection timed out');
-            if (!this.isConnected && this.onDisconnectCallback) {
-                this.onDisconnectCallback('timeout');
+            
+            // Only disconnect if we're still not connected
+            if (!this.isConnected) {
+                if (this.onDisconnectCallback) {
+                    this.onDisconnectCallback('timeout');
+                }
+                
+                // Clean up the failed connection
+                if (this.hostConnection) {
+                    try {
+                        this.hostConnection.close();
+                    } catch (e) {
+                        console.error('Error closing connection:', e);
+                    }
+                    this.hostConnection = null;
+                }
             }
-        }, 8000); // Increased to 8 seconds for slower networks
+        }, 15000); // Increased to 15 seconds for very slow networks
+        
+        // Track if this specific connection is open
+        let isThisConnectionOpen = false;
         
         conn.on('open', () => {
-            console.log('Connected to host');
+            console.log('Connected to host successfully');
             this.isConnected = true;
+            isThisConnectionOpen = true;
             clearTimeout(connectionTimeout);
             
-            conn.send({
-                type: 'JOIN_ROOM',
-                peerId: this.peer.id
-            });
-            
-            if (this.onConnectionCallback) {
-                this.onConnectionCallback('success');
+            // Send join message to the host
+            try {
+                conn.send({
+                    type: 'JOIN_ROOM',
+                    peerId: this.peer.id
+                });
+                
+                // Let the app know we're connected
+                if (this.onConnectionCallback) {
+                    this.onConnectionCallback('success');
+                }
+                
+                // Set up a ping interval to keep the connection alive
+                this.pingInterval = setInterval(() => {
+                    if (conn.open) {
+                        try {
+                            conn.send({ type: 'PING' });
+                        } catch (e) {
+                            console.error('Error sending ping:', e);
+                        }
+                    } else {
+                        clearInterval(this.pingInterval);
+                    }
+                }, 30000); // Send a ping every 30 seconds
+            } catch (e) {
+                console.error('Error in connection open handler:', e);
             }
         });
         
         conn.on('data', (data) => {
-            this.handleIncomingData(data);
+            try {
+                // Ignore pings in the console
+                if (data && data.type !== 'PING') {
+                    this.handleIncomingData(data);
+                }
+            } catch (e) {
+                console.error('Error handling incoming data:', e);
+            }
         });
         
         conn.on('close', () => {
             console.log('Disconnected from host');
-            this.isConnected = false;
             
-            if (this.onDisconnectCallback) {
-                this.onDisconnectCallback('closed');
+            // Only process if this connection was actually open
+            if (isThisConnectionOpen) {
+                this.isConnected = false;
+                clearInterval(this.pingInterval);
+                
+                if (this.onDisconnectCallback) {
+                    this.onDisconnectCallback('closed');
+                }
+                
+                // Try to reconnect or become host
+                this.tryBecomeHost();
             }
-            
-            // Try to reconnect or become host
-            this.tryBecomeHost();
         });
         
         conn.on('error', (err) => {
             console.error('Connection error:', err);
-            this.isConnected = false;
             
-            if (this.onDisconnectCallback) {
-                this.onDisconnectCallback('error');
+            // Only process if this connection was actually open
+            if (isThisConnectionOpen) {
+                this.isConnected = false;
+                clearInterval(this.pingInterval);
+                
+                if (this.onDisconnectCallback) {
+                    this.onDisconnectCallback('error');
+                }
+                
+                // Try to reconnect or become host
+                this.tryBecomeHost();
             }
-            
-            // Try to reconnect or become host
-            this.tryBecomeHost();
         });
         
         return true;
@@ -329,6 +417,10 @@ class PubgSync {
                 console.log('Peer joined room:', data.peerId);
                 break;
                 
+            case 'PING':
+                // Silently ignore ping messages, they're just to keep the connection alive
+                break;
+                
             case 'STATE_UPDATE':
                 // Pass the state update to the app
                 if (this.onDataCallback) {
@@ -339,38 +431,12 @@ class PubgSync {
             case 'ACTION':
                 // Pass the action to the app
                 if (this.onDataCallback) {
-                    this.onDataCallback('ACTION', data.action);
+                    this.onDataCallback('ACTION', data);  // Pass the entire data object
                 }
                 
                 // If we're the host, broadcast to all other peers
                 if (this.isHost && sourcePeer) {
                     this.broadcast(data, sourcePeer.peer);
-                }
-                break;
-                
-            case 'ROOM_DISCOVERY':
-                // Check if we're the host of the requested room
-                if (this.isHost && this.roomId === data.roomId) {
-                    // Respond with our peer ID
-                    if (sourcePeer && sourcePeer.open) {
-                        sourcePeer.send({
-                            type: 'ROOM_DISCOVERY_RESPONSE',
-                            roomId: data.roomId,
-                            hostPeerId: this.peer.id
-                        });
-                    }
-                }
-                break;
-                
-            case 'ROOM_DISCOVERY_RESPONSE':
-                // Check if we're waiting for this room
-                if (this.pendingDiscovery && this.pendingDiscovery.roomId === data.roomId) {
-                    const callback = this.pendingDiscovery.callback;
-                    this.pendingDiscovery = null;
-                    
-                    if (callback) {
-                        callback(data.hostPeerId);
-                    }
                 }
                 break;
         }
