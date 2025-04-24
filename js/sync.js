@@ -109,18 +109,13 @@ class PubgSync {
         // This is the key to making it simple!
         const peerId = 'pubg_' + this.roomId.toLowerCase();
         
-        // Create the peer with this specific ID
-        this.peer = new Peer(peerId, {
-            config: {
-                'iceServers': [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' }
-                ]
-            }
-        });
+        // Create the peer with this specific ID - use simplest constructor
+        this.peer = new Peer(peerId);
         
-        // Set up the peer event handlers
-        this.setupPeerHandlers();
+        // Handle incoming connections
+        this.peer.on('connection', (conn) => {
+            this.handleNewConnection(conn);
+        });
         
         // When peer is successfully connected to the server
         this.peer.on('open', (id) => {
@@ -169,18 +164,14 @@ class PubgSync {
             this.onConnectionCallback('connecting');
         }
         
-        // Create our peer
-        this.peer = new Peer(null, {  // Random ID for client
-            config: {
-                'iceServers': [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' }
-                ]
-            }
-        });
+        // Create our peer with no debugging or custom config
+        // This is how it was when it was working previously
+        this.peer = new Peer();
         
-        // Set up handlers
-        this.setupPeerHandlers();
+        // Set up handlers for connections from others
+        this.peer.on('connection', (conn) => {
+            this.handleNewConnection(conn);
+        });
         
         // When peer is open, connect to host using the predictable ID format
         this.peer.on('open', (id) => {
@@ -191,10 +182,9 @@ class PubgSync {
             
             console.log('Connecting to host:', hostPeerId);
             
-            // Connect to the host
+            // Basic connection options - keep it simple
             const conn = this.peer.connect(hostPeerId, {
-                reliable: true,
-                metadata: { roomId: friendlyRoomId }
+                reliable: true
             });
             
             if (!conn) {
@@ -208,7 +198,7 @@ class PubgSync {
             this.setupConnectionHandlers(conn);
         });
         
-        // Handle connection errors
+        // Simple error handler - same as original
         this.peer.on('error', (err) => {
             console.error('Peer error when joining room:', err);
             
@@ -234,115 +224,61 @@ class PubgSync {
     // We no longer need discovery methods - the connection is direct
     // based on a predictable peer ID format
     
-    // Setup connection event handlers
+    // Setup connection event handlers - simplified to what was working before
     setupConnectionHandlers(conn) {
         if (!conn) return false;
         
         this.hostConnection = conn;
         
-        // Set a longer timeout for connection establishment
+        // Simple timeout - don't over-engineer
         let connectionTimeout = setTimeout(() => {
             console.error('Connection timed out');
-            
-            // Only disconnect if we're still not connected
-            if (!this.isConnected) {
-                if (this.onDisconnectCallback) {
-                    this.onDisconnectCallback('timeout');
-                }
-                
-                // Clean up the failed connection
-                if (this.hostConnection) {
-                    try {
-                        this.hostConnection.close();
-                    } catch (e) {
-                        console.error('Error closing connection:', e);
-                    }
-                    this.hostConnection = null;
-                }
+            if (!this.isConnected && this.onDisconnectCallback) {
+                this.onDisconnectCallback('timeout');
             }
-        }, 15000); // Increased to 15 seconds for very slow networks
-        
-        // Track if this specific connection is open
-        let isThisConnectionOpen = false;
+        }, 8000);
         
         conn.on('open', () => {
-            console.log('Connected to host successfully');
+            console.log('Connected to host');
             this.isConnected = true;
-            isThisConnectionOpen = true;
             clearTimeout(connectionTimeout);
             
-            // Send join message to the host
-            try {
-                conn.send({
-                    type: 'JOIN_ROOM',
-                    peerId: this.peer.id
-                });
-                
-                // Let the app know we're connected
-                if (this.onConnectionCallback) {
-                    this.onConnectionCallback('success');
-                }
-                
-                // Set up a ping interval to keep the connection alive
-                this.pingInterval = setInterval(() => {
-                    if (conn.open) {
-                        try {
-                            conn.send({ type: 'PING' });
-                        } catch (e) {
-                            console.error('Error sending ping:', e);
-                        }
-                    } else {
-                        clearInterval(this.pingInterval);
-                    }
-                }, 30000); // Send a ping every 30 seconds
-            } catch (e) {
-                console.error('Error in connection open handler:', e);
+            conn.send({
+                type: 'JOIN_ROOM',
+                peerId: this.peer.id
+            });
+            
+            if (this.onConnectionCallback) {
+                this.onConnectionCallback('success');
             }
         });
         
         conn.on('data', (data) => {
-            try {
-                // Ignore pings in the console
-                if (data && data.type !== 'PING') {
-                    this.handleIncomingData(data);
-                }
-            } catch (e) {
-                console.error('Error handling incoming data:', e);
-            }
+            this.handleIncomingData(data);
         });
         
         conn.on('close', () => {
             console.log('Disconnected from host');
+            this.isConnected = false;
             
-            // Only process if this connection was actually open
-            if (isThisConnectionOpen) {
-                this.isConnected = false;
-                clearInterval(this.pingInterval);
-                
-                if (this.onDisconnectCallback) {
-                    this.onDisconnectCallback('closed');
-                }
-                
-                // Try to reconnect or become host
-                this.tryBecomeHost();
+            if (this.onDisconnectCallback) {
+                this.onDisconnectCallback('closed');
             }
+            
+            // Try to reconnect or become host
+            this.tryBecomeHost();
         });
         
         conn.on('error', (err) => {
             console.error('Connection error:', err);
+            this.isConnected = false;
             
-            // Only process if this connection was actually open
-            if (isThisConnectionOpen) {
-                this.isConnected = false;
-                clearInterval(this.pingInterval);
-                
-                if (this.onDisconnectCallback) {
-                    this.onDisconnectCallback('error');
-                }
-                
-                // Try to reconnect or become host
-                this.tryBecomeHost();
+            if (this.onDisconnectCallback) {
+                this.onDisconnectCallback('error');
             }
+            
+            // Try to reconnect or become host
+            this.tryBecomeHost();
         });
         
         return true;
@@ -431,7 +367,7 @@ class PubgSync {
             case 'ACTION':
                 // Pass the action to the app
                 if (this.onDataCallback) {
-                    this.onDataCallback('ACTION', data);  // Pass the entire data object
+                    this.onDataCallback('ACTION', data.action);  // Pass the action object as before
                 }
                 
                 // If we're the host, broadcast to all other peers

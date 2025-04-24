@@ -28,8 +28,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 updateStateFromSync(data.data);
             } else if (data.action === 'CALL_NEXT') {
                 // Someone called the next player
-                // Show notification for the newly called player
-                console.log('Call next data received:', data);
+                console.log('Call next action received:', data);
+                
+                // The data structure is going to be the original structure (just the action property)
+                // So we can access playerData directly
                 if (data.playerData) {
                     // Update the now serving display with animation
                     nowServingDisplay.style.animation = 'none';
@@ -44,8 +46,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     // Visual effects
                     playNotificationSound();
                     startChickenRain();
-                } else {
-                    console.warn('No player data received with CALL_NEXT action');
                 }
             } else if (data.action === 'RESET_QUEUE') {
                 queue = [];
