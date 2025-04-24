@@ -28,7 +28,23 @@ document.addEventListener('DOMContentLoaded', function() {
                 updateStateFromSync(data.data);
             } else if (data.action === 'CALL_NEXT') {
                 // Someone called the next player
-                // Just update our state, actual UI will be updated via state update
+                // Show notification for the newly called player
+                const playerData = data.playerData;
+                if (playerData) {
+                    // Update the now serving display with animation
+                    nowServingDisplay.style.animation = 'none';
+                    void nowServingDisplay.offsetWidth;
+                    nowServingDisplay.style.animation = 'glow 1.5s infinite alternate';
+                    nowServingDisplay.textContent = playerData.id;
+                    
+                    // Show notification modal
+                    notificationMessage.textContent = `${playerData.name}, your ticket #${playerData.id} has been called!`;
+                    notificationModal.show();
+                    
+                    // Visual effects
+                    playNotificationSound();
+                    startChickenRain();
+                }
             } else if (data.action === 'RESET_QUEUE') {
                 queue = [];
                 saveState();
@@ -334,11 +350,12 @@ document.addEventListener('DOMContentLoaded', function() {
             saveState();
             updateUI();
             
-            // If we're connected to a room, send a specific action
+            // If we're connected to a room, send a specific action with player data
             if (window.pubgSync && window.pubgSync.isInRoom()) {
                 window.pubgSync.sendData({
                     action: 'CALL_NEXT',
-                    playerId: nextPlayer.id
+                    playerId: nextPlayer.id,
+                    playerData: nextPlayer  // Send complete player data for notification
                 });
             }
             
