@@ -19,121 +19,99 @@ class PubgSync {
 
     // Initialize the peer connection
     init() {
-        // Use the default PeerJS cloud service (no config needed)
-        // This gives us the best chance of NAT traversal across different networks
-        this.peer = new Peer({
-            // No host/port needed - will use PeerJS's cloud service
-            config: {
-                'iceServers': [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' },
-                    { urls: 'stun:stun2.l.google.com:19302' }
-                ]
-            },
-            debug: 2 // Set debug level for more info in console
-        });
-
-        // Initialize the global room registry with a network-accessible registry
-        window.PUBG_ROOM_REGISTRY = window.PUBG_ROOM_REGISTRY || {};
+        // Use the default PeerJS cloud service with a simple, predictable ID format
+        // The ID format will be pubg_ + roomId - making connection much easier
         
-        // Try to load room registry from localStorage
-        try {
-            const savedRegistry = localStorage.getItem('pubgRoomRegistry');
-            if (savedRegistry) {
-                const registry = JSON.parse(savedRegistry);
-                // Merge into global registry
-                Object.assign(window.PUBG_ROOM_REGISTRY, registry);
-                console.log('Loaded room registry from localStorage:', window.PUBG_ROOM_REGISTRY);
-            }
-        } catch (e) {
-            console.error('Failed to load room registry from localStorage:', e);
-        }
-
-        // Handle peer open event
-        this.peer.on('open', (id) => {
-            console.log('My peer ID is: ' + id);
-            // Store my ID for reconnection
-            localStorage.setItem('myPeerId', id);
+        // We don't initialize the peer until a room is created or joined
+        // This avoids unnecessary connections and errors
+        
+        // Handle incoming connections when peer is created
+        this.setupPeerHandlers = () => {
+            if (!this.peer) return;
             
-            // Auto-reconnect to previous session if possible
-            // Only attempt after we have a valid peer ID
-            this.autoReconnect();
-        });
-
-        // Handle incoming connections
-        this.peer.on('connection', (conn) => {
-            this.handleNewConnection(conn);
-        });
-
-        // Handle errors
-        this.peer.on('error', (err) => {
-            console.error('Peer error:', err);
-            // Try to reconnect if possible
-            setTimeout(() => this.reconnect(), 5000);
-        });
-        
-        // Handle disconnection from the signaling server
-        this.peer.on('disconnected', () => {
-            console.log('Disconnected from signaling server, attempting to reconnect...');
-            this.peer.reconnect();
-        });
+            // Handle incoming connections
+            this.peer.on('connection', (conn) => {
+                this.handleNewConnection(conn);
+            });
+    
+            // Handle errors
+            this.peer.on('error', (err) => {
+                console.error('Peer error:', err);
+            });
+            
+            // Handle disconnection from the signaling server
+            this.peer.on('disconnected', () => {
+                console.log('Disconnected from signaling server, attempting to reconnect...');
+                this.peer.reconnect();
+            });
+        };
     }
 
-    // Try to reconnect to a previous session
-    autoReconnect() {
-        const savedRoomId = localStorage.getItem('pubgRoomId');
-        if (savedRoomId) {
-            console.log('Attempting to reconnect to room:', savedRoomId);
-            // Since this is now called in the peer.open event, we should have a valid peer ID
-            this.joinRoom(savedRoomId);
+    // We've disabled auto-reconnect for simplicity
+    
+    // Clean up existing connection if there is one
+    cleanupExistingConnection() {
+        if (this.peer && !this.peer.destroyed) {
+            this.peer.destroy();
         }
-    }
-
-    // Reconnect if disconnected
-    reconnect() {
-        if (this.peer && this.peer.destroyed) {
-            // Recreate the peer connection
-            this.init();
-            
-            // Try to rejoin the previous room
-            const savedRoomId = localStorage.getItem('pubgRoomId');
-            if (savedRoomId) {
-                this.joinRoom(savedRoomId);
-            }
-        }
+        
+        // Reset state
+        this.peer = null;
+        this.connections = [];
+        this.isConnected = false;
+        this.hostConnection = null;
     }
 
     // Create a new room as host
     createRoom() {
+        // Clean up any existing connection
+        this.cleanupExistingConnection();
+        
         this.isHost = true;
         this.roomId = this.generateRoomId();
         localStorage.setItem('pubgRoomId', this.roomId);
         
-        // Make our peer ID global so it can be shared
-        // With the custom ID format that includes the room code,
-        // anyone with the room ID can connect directly
+        // Create a predictable peer ID based on the room code
+        // This is the key to making it simple!
+        const peerId = 'pubg_' + this.roomId.toLowerCase();
         
-        const roomIdLower = this.roomId.toLowerCase();
+        // Create the peer with this specific ID
+        this.peer = new Peer(peerId, {
+            config: {
+                'iceServers': [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+            }
+        });
         
-        // When we're the host, the peer ID is the actual peer ID
-        // Anyone with the room ID can use this simple mapping to find us
-        window.PUBG_ROOM_REGISTRY[roomIdLower] = this.peer.id;
+        // Set up the peer event handlers
+        this.setupPeerHandlers();
         
-        // Also store in localStorage for persistence
-        try {
-            let registry = JSON.parse(localStorage.getItem('pubgRoomRegistry') || '{}');
-            registry[roomIdLower] = this.peer.id;
-            localStorage.setItem('pubgRoomRegistry', JSON.stringify(registry));
-        } catch (e) {
-            console.error('Failed to save room registry to localStorage:', e);
-        }
+        // When peer is successfully connected to the server
+        this.peer.on('open', (id) => {
+            console.log('Created room', this.roomId, 'with host peer ID:', id);
+            
+            // Display the room ID for sharing
+            if (this.onHostChangeCallback) {
+                this.onHostChangeCallback(true, this.roomId);
+            }
+        });
         
-        console.log('Created room', this.roomId, 'with host peer ID:', this.peer.id);
-        
-        // Display the room ID for sharing
-        if (this.onHostChangeCallback) {
-            this.onHostChangeCallback(true, this.roomId);
-        }
+        // Handle peer error (ID already taken, etc)
+        this.peer.on('error', (err) => {
+            if (err.type === 'unavailable-id') {
+                // The room ID is already in use, generate a new one
+                console.error('Room ID already in use. Try again.');
+                alert('This room name is already in use. Please try again with a different name.');
+                this.cleanupExistingConnection();
+                
+                // Notify UI
+                if (this.onDisconnectCallback) {
+                    this.onDisconnectCallback('room_exists');
+                }
+            }
+        });
         
         return this.roomId;
     }
@@ -142,160 +120,85 @@ class PubgSync {
     joinRoom(friendlyRoomId) {
         if (!friendlyRoomId) return false;
         
+        // Clean up any existing connection
+        this.cleanupExistingConnection();
+        
+        // Standardize the room ID format
+        friendlyRoomId = friendlyRoomId.trim();
+        
         this.isHost = false;
         this.roomId = friendlyRoomId;
         localStorage.setItem('pubgRoomId', friendlyRoomId);
-        
-        // Check if peer is ready, if not, wait and retry
-        if (!this.peer || !this.peer.id) {
-            console.log('Peer not ready yet, waiting 1 second before joining room');
-            setTimeout(() => this.joinRoom(friendlyRoomId), 1000);
-            return true; // Return optimistically
-        }
         
         // Display connecting indicator in UI
         if (this.onConnectionCallback) {
             this.onConnectionCallback('connecting');
         }
         
-        // First, we need to discover the actual peer ID corresponding to this friendly room ID
-        this.discoverHostPeerId(friendlyRoomId, (hostPeerId) => {
-            if (!hostPeerId) {
-                console.error('Could not find host for room:', friendlyRoomId);
-                
-                // Notify UI about connection failure
-                if (this.onDisconnectCallback) {
-                    this.onDisconnectCallback('failed_discovery');
-                }
-                return false;
+        // Create our peer
+        this.peer = new Peer(null, {  // Random ID for client
+            config: {
+                'iceServers': [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
             }
+        });
+        
+        // Set up handlers
+        this.setupPeerHandlers();
+        
+        // When peer is open, connect to host using the predictable ID format
+        this.peer.on('open', (id) => {
+            console.log('My client peer ID:', id);
             
-            // Connect to the discovered host
-            console.log('Connecting to host peer ID:', hostPeerId);
+            // The host peer ID is predictable - it's pubg_ + roomId.toLowerCase()
+            const hostPeerId = 'pubg_' + friendlyRoomId.toLowerCase();
+            
+            console.log('Connecting to host:', hostPeerId);
+            
+            // Connect to the host
             const conn = this.peer.connect(hostPeerId, {
                 reliable: true,
                 metadata: { roomId: friendlyRoomId }
             });
             
+            if (!conn) {
+                console.error('Failed to create connection to host');
+                if (this.onDisconnectCallback) {
+                    this.onDisconnectCallback('connection_failed');
+                }
+                return false;
+            }
+            
             this.setupConnectionHandlers(conn);
-            return true;
         });
         
-        return true; // Return optimistically, actual connection happens asynchronously
-    }
-    
-    // Discover the actual peer ID for a friendly room ID
-    discoverHostPeerId(friendlyRoomId, callback) {
-        // For now, we'll use a simple in-memory map of room IDs
-        // In a production environment, this would be replaced with a proper signaling mechanism
-        
-        // Simulate peer discovery with a direct connection to the server
-        // For demo purposes, we'll temporarily connect to a well-known peer ID format
-        const discoveryId = 'ROOM_' + friendlyRoomId;
-        
-        // Store the connection attempt
-        this.pendingDiscovery = {
-            roomId: friendlyRoomId,
-            callback: callback
-        };
-        
-        // Check if we have any connections that might know about this room
-        if (this.connections.length > 0) {
-            // Ask existing connections if they know about this room
-            this.connections.forEach(conn => {
-                if (conn.open) {
-                    conn.send({
-                        type: 'ROOM_DISCOVERY',
-                        roomId: friendlyRoomId
-                    });
-                }
-            });
+        // Handle connection errors
+        this.peer.on('error', (err) => {
+            console.error('Peer error when joining room:', err);
             
-            // Set a timeout to fail gracefully if no response
-            setTimeout(() => {
-                if (this.pendingDiscovery && this.pendingDiscovery.roomId === friendlyRoomId) {
-                    // No response, try direct connection
-                    this.tryDirectConnection(friendlyRoomId, callback);
-                }
-            }, 2000);
-        } else {
-            // No existing connections, try direct connection
-            this.tryDirectConnection(friendlyRoomId, callback);
-        }
-    }
-    
-    // Try direct connection to find the host peer ID
-    tryDirectConnection(friendlyRoomId, callback) {
-        // First, check if we've successfully created our peer
-        if (!this.peer || !this.peer.id) {
-            console.error('Peer connection not ready yet, retrying in 1 second');
-            setTimeout(() => this.tryDirectConnection(friendlyRoomId, callback), 1000);
-            return;
-        }
-        
-        // For cross-device connections, we need a simple and direct way to address hosts
-        // We'll try a few different approaches:
-        const roomIdLower = friendlyRoomId.toLowerCase();
-        
-        // 1. Check our local registry first (fastest if available)
-        if (window.PUBG_ROOM_REGISTRY && window.PUBG_ROOM_REGISTRY[roomIdLower]) {
-            const hostId = window.PUBG_ROOM_REGISTRY[roomIdLower];
-            console.log('Found host peer ID in local registry:', hostId);
-            callback(hostId);
-            this.pendingDiscovery = null;
-            return;
-        }
-        
-        // 2. Check localStorage registry
-        try {
-            const savedRegistry = localStorage.getItem('pubgRoomRegistry');
-            if (savedRegistry) {
-                const registry = JSON.parse(savedRegistry);
-                if (registry[roomIdLower]) {
-                    const hostId = registry[roomIdLower];
-                    console.log('Found host peer ID in localStorage registry:', hostId);
-                    window.PUBG_ROOM_REGISTRY[roomIdLower] = hostId;
-                    callback(hostId);
-                    this.pendingDiscovery = null;
-                    return;
-                }
-            }
-        } catch (e) {
-            console.error('Error reading localStorage registry:', e);
-        }
-        
-        // 3. Allow user to manually enter a host ID if they have it
-        const manualInput = confirm(
-            `Could not automatically find the host for room "${friendlyRoomId}". ` +
-            `Would you like to enter the host's ID manually?`
-        );
-        
-        if (manualInput) {
-            const hostId = prompt(
-                `Please enter the host ID for room "${friendlyRoomId}":`,
-                ""
-            );
-            
-            if (hostId && hostId.trim()) {
-                // Store for future use
-                window.PUBG_ROOM_REGISTRY[roomIdLower] = hostId.trim();
-                try {
-                    let registry = JSON.parse(localStorage.getItem('pubgRoomRegistry') || '{}');
-                    registry[roomIdLower] = hostId.trim();
-                    localStorage.setItem('pubgRoomRegistry', JSON.stringify(registry));
-                } catch (e) {}
+            if (err.type === 'peer-unavailable') {
+                // The host peer ID doesn't exist
+                console.error('Room not found or host offline');
+                alert('Room "' + friendlyRoomId + '" not found. The host may be offline or the room ID is incorrect.');
                 
-                callback(hostId.trim());
-                this.pendingDiscovery = null;
-                return;
+                if (this.onDisconnectCallback) {
+                    this.onDisconnectCallback('room_not_found');
+                }
+            } else {
+                // Other errors
+                if (this.onDisconnectCallback) {
+                    this.onDisconnectCallback('error');
+                }
             }
-        }
+        });
         
-        // No valid host ID found
-        console.log('No valid host ID found for room:', friendlyRoomId);
-        callback(null);
-        this.pendingDiscovery = null;
+        return true;
     }
+    
+    // We no longer need discovery methods - the connection is direct
+    // based on a predictable peer ID format
     
     // Setup connection event handlers
     setupConnectionHandlers(conn) {
@@ -509,32 +412,21 @@ class PubgSync {
     tryBecomeHost() {
         // Wait a bit to see if we can reconnect to the host
         setTimeout(() => {
-            if (!this.isConnected && !this.isHost) {
+            if (!this.isConnected && !this.isHost && this.roomId) {
                 console.log('Trying to become the new host...');
                 
-                // Become the new host with the same room ID
-                this.isHost = true;
+                // We can't actually become the host with the same ID as the previous host
+                // This would require us to use the exact same predictable peer ID
+                // which might still be in use by the previous host
                 
-                // If we're taking over, our peer ID is now associated with this room
-                if (this.roomId) {
-                    // Update the global registry with our peer ID for this room
-                    const roomIdLower = this.roomId.toLowerCase();
-                    window.PUBG_ROOM_REGISTRY = window.PUBG_ROOM_REGISTRY || {};
-                    window.PUBG_ROOM_REGISTRY[roomIdLower] = this.peer.id;
-                    
-                    // Also update in localStorage for persistence
-                    try {
-                        let registry = JSON.parse(localStorage.getItem('pubgRoomRegistry') || '{}');
-                        registry[roomIdLower] = this.peer.id;
-                        localStorage.setItem('pubgRoomRegistry', JSON.stringify(registry));
-                    } catch (e) {
-                        console.error('Failed to update room registry in localStorage:', e);
-                    }
-                }
+                // Instead, we'll disconnect and let the user know they need to create a new room
+                this.cleanupExistingConnection();
                 
-                // Notify the app that we're now the host
-                if (this.onHostChangeCallback) {
-                    this.onHostChangeCallback(true, this.roomId);
+                alert("The connection to the host was lost. You'll need to create a new room or join another room.");
+                
+                // Notify the app that we're disconnected
+                if (this.onDisconnectCallback) {
+                    this.onDisconnectCallback('host_disconnected');
                 }
             }
         }, 3000);
@@ -552,19 +444,11 @@ class PubgSync {
             this.hostConnection.close();
         }
         
-        // Reset state
-        this.connections = [];
-        this.isHost = false;
-        this.hostConnection = null;
-        this.isConnected = false;
-        
         // Clear room ID from storage
         localStorage.removeItem('pubgRoomId');
         
-        // Close the peer connection
-        if (this.peer && !this.peer.destroyed) {
-            this.peer.destroy();
-        }
+        // Clean up the connection
+        this.cleanupExistingConnection();
     }
 
     // Generate a simple, user-friendly room ID
