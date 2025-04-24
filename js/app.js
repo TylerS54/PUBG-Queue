@@ -50,6 +50,11 @@ document.addEventListener('DOMContentLoaded', function() {
     function handleSyncConnection() {
         console.log('Connected to sync network');
         
+        // Update room display to remove "connecting" status
+        if (window.pubgSync.getRoomId()) {
+            currentRoomIdElement.textContent = window.pubgSync.getRoomId();
+        }
+        
         // Show a toast notification
         // We'll use a simple alert for now
         setTimeout(() => {
@@ -106,9 +111,14 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
         
-        if (window.pubgSync.joinRoom(roomId)) {
-            showActiveRoom(roomId, false);
-        } else {
+        // Show a connecting message
+        showActiveRoom(roomId, false);
+        
+        // Add a connecting indicator
+        currentRoomIdElement.textContent = roomId + " (connecting...)";
+        
+        if (!window.pubgSync.joinRoom(roomId)) {
+            hideActiveRoom();
             alert('Failed to join room. Please check the Room ID and try again.');
         }
     }
@@ -138,8 +148,60 @@ document.addEventListener('DOMContentLoaded', function() {
         
         if (isHost) {
             hostBadge.classList.remove('d-none');
+            
+            // When hosting, also show the host peer ID for sharing
+            if (window.pubgSync && window.pubgSync.peer && window.pubgSync.peer.id) {
+                // Create host ID element if it doesn't exist
+                let hostIdDisplay = document.getElementById('host-id-display');
+                if (!hostIdDisplay) {
+                    hostIdDisplay = document.createElement('div');
+                    hostIdDisplay.id = 'host-id-display';
+                    hostIdDisplay.className = 'mt-2 small text-muted';
+                    
+                    const copyBtn = document.createElement('button');
+                    copyBtn.className = 'btn btn-sm btn-outline-dark ms-2';
+                    copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
+                    copyBtn.id = 'copy-host-id';
+                    
+                    hostIdDisplay.innerHTML = `<small>Host ID (for manual connection):</small>
+                    <div class="d-flex justify-content-between align-items-center">
+                        <code class="small text-truncate" style="max-width: 120px;" id="host-id-code"></code>
+                    </div>`;
+                    
+                    // Add to host badge container after it's created
+                    setTimeout(() => {
+                        hostBadge.parentNode.appendChild(hostIdDisplay);
+                        hostIdDisplay.querySelector('.d-flex').appendChild(copyBtn);
+                        
+                        // Add copy button event listener
+                        document.getElementById('copy-host-id').addEventListener('click', function() {
+                            const hostIdCode = document.getElementById('host-id-code');
+                            navigator.clipboard.writeText(hostIdCode.textContent)
+                                .then(() => {
+                                    this.innerHTML = '<i class="fas fa-check"></i>';
+                                    setTimeout(() => {
+                                        this.innerHTML = '<i class="fas fa-copy"></i>';
+                                    }, 2000);
+                                });
+                        });
+                    }, 100);
+                }
+                
+                // Update the host ID display (may happen after element is created)
+                setTimeout(() => {
+                    const hostIdCode = document.getElementById('host-id-code');
+                    if (hostIdCode) {
+                        hostIdCode.textContent = window.pubgSync.peer.id;
+                    }
+                }, 200);
+            }
         } else {
             hostBadge.classList.add('d-none');
+            // When joining, remove any existing host ID display
+            const hostIdDisplay = document.getElementById('host-id-display');
+            if (hostIdDisplay) {
+                hostIdDisplay.remove();
+            }
         }
     }
 
